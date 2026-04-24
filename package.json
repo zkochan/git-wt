@@ -1,6 +1,6 @@
 {
   "name": "@zkochan/git-wt",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Create git worktrees quickly from branches or PRs, with a shell helper that cds into the new worktree",
   "type": "module",
   "bin": {
