@@ -1,14 +1,14 @@
 const BASH_ZSH = `wt() {
   local __wt_dir
   __wt_dir=$(command git-wt "$@") || return $?
-  [ -n "$__wt_dir" ] && cd -- "$__wt_dir"
+  [ -n "$__wt_dir" ] && [ -d "$__wt_dir" ] && cd -- "$__wt_dir"
 }
 `
 
 const FISH = `function wt
     set -l dir (command git-wt $argv)
     or return $status
-    test -n "$dir"; and cd -- $dir
+    test -n "$dir" -a -d "$dir"; and cd -- $dir
 end
 `
 

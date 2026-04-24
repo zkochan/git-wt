@@ -74,6 +74,23 @@ git wt feat/my-feature
 (Note: `git wt` can't change your shell's directory — that's what the `wt`
 shell function is for.)
 
+## Cleaning up merged worktrees
+
+Over time, worktrees pile up for PRs that have long since been merged. Run:
+
+```sh
+git-wt cleanup --dry-run   # preview what would be removed
+git-wt cleanup             # actually remove them
+```
+
+For each worktree, `git-wt` looks up the branch on GitHub via `gh pr list`
+and — if the branch belongs to a merged PR — removes the worktree and
+deletes the local branch. The current worktree, the bare repo, detached
+HEADs, and protected branches (`main`, `master`, `v<NN>`) are always left
+alone.
+
+Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be authenticated.
+
 ## Shared config across worktrees
 
 If `.claude` or `.local-settings` exists in your repo's [git common dir][common-dir]

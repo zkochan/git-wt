@@ -1,11 +1,13 @@
 #!/usr/bin/env node
+import { cleanupWorktrees } from './cleanup.js'
 import { createWorktree } from './create.js'
 import { emitShellInit } from './init.js'
 
 const USAGE = `Usage:
-  git-wt <branch-name>         Create a worktree for a branch and print its path
-  git-wt <pr-number>           Create a worktree for a GitHub PR and print its path
-  git-wt init <bash|zsh|fish>  Print a shell function \`wt\` that cds into new worktrees
+  git-wt <branch-name>          Create a worktree for a branch and print its path
+  git-wt <pr-number>            Create a worktree for a GitHub PR and print its path
+  git-wt cleanup [--dry-run]    Remove worktrees whose branches belong to merged PRs
+  git-wt init <bash|zsh|fish>   Print a shell function \`wt\` that cds into new worktrees
 `
 
 const args = process.argv.slice(2)
@@ -22,6 +24,12 @@ if (args[0] === 'init') {
     process.exit(1)
   }
   process.stdout.write(emitShellInit(shell))
+  process.exit(0)
+}
+
+if (args[0] === 'cleanup') {
+  const dryRun = args.slice(1).includes('--dry-run')
+  cleanupWorktrees({ dryRun })
   process.exit(0)
 }
 
