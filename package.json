@@ -1,14 +1,31 @@
 {
   "name": "@zkochan/git-wt",
   "version": "0.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "Create git worktrees quickly from branches or PRs, with a shell helper that cds into the new worktree",
+  "type": "module",
+  "bin": {
+    "git-wt": "lib/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "pnpm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zkochan/git-wt.git"
+  },
+  "keywords": [
+    "git",
+    "worktree",
+    "cli"
+  ],
+  "license": "MIT",
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
@@ -16,5 +33,8 @@
       "onFail": "download"
     }
   },
-  "type": "module"
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
 }
