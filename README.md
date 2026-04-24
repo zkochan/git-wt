@@ -9,24 +9,28 @@ Create git worktrees quickly from branches or PRs, with a shell helper that
 pnpm add -g @zkochan/git-wt
 ```
 
-Then add one line to your shell config so the `wt` function is available in
-every future session:
+Then wire the `wt` shell function into your shell config so it's available
+in every future session. Pick the one-liner for your shell — it appends the
+snippet to the right rc file and activates it in the current session too:
 
-**fish** — add to `~/.config/fish/config.fish`:
+**fish**:
 
-```fish
+```sh
+echo 'git-wt init fish | source' >> ~/.config/fish/config.fish
 git-wt init fish | source
 ```
 
-**bash** — add to `~/.bashrc`:
+**bash**:
 
 ```sh
+echo 'eval "$(git-wt init bash)"' >> ~/.bashrc
 eval "$(git-wt init bash)"
 ```
 
-**zsh** — add to `~/.zshrc`:
+**zsh**:
 
 ```sh
+echo 'eval "$(git-wt init zsh)"' >> ~/.zshrc
 eval "$(git-wt init zsh)"
 ```
 
