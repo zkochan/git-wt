@@ -1,4 +1,4 @@
-# git-wt
+# @zkochan/git-wt
 
 Create git worktrees quickly from branches or PRs, with a shell helper that
 `cd`s into the new worktree for you.
