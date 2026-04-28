@@ -81,9 +81,14 @@ shell function is for.)
 ## Running a hook after creating a PR worktree
 
 After `wt <pr-number>` creates a worktree and `cd`s into it, the shell function
-runs `~/.config/git-wt/pr-hook` if it exists and is executable
-(`$XDG_CONFIG_HOME/git-wt/pr-hook` is honored too). The PR number is exposed as
-the `PR_NUMBER` environment variable.
+runs an executable hook if one is found. It looks in two places, in order:
+
+1. `<worktree>/.git-wt/pr-hook` — a per-repo hook that can be checked into the
+   repo so every contributor gets the same behavior.
+2. `~/.config/git-wt/pr-hook` (or `$XDG_CONFIG_HOME/git-wt/pr-hook`) — your
+   personal default for any repo without its own hook.
+
+The PR number is exposed to the hook as the `PR_NUMBER` environment variable.
 
 A typical use is to launch a code review tool. Example: drop the following into
 `~/.config/git-wt/pr-hook` (and `chmod +x` it) to start a Claude Code review of
