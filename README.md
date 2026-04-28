@@ -78,6 +78,32 @@ git wt feat/my-feature
 (Note: `git wt` can't change your shell's directory — that's what the `wt`
 shell function is for.)
 
+## Running a hook after creating a PR worktree
+
+After `wt <pr-number>` creates a worktree and `cd`s into it, the shell function
+runs `~/.config/git-wt/pr-hook` if it exists and is executable
+(`$XDG_CONFIG_HOME/git-wt/pr-hook` is honored too). The PR number is exposed as
+the `PR_NUMBER` environment variable.
+
+A typical use is to launch a code review tool. Example: drop the following into
+`~/.config/git-wt/pr-hook` (and `chmod +x` it) to start a Claude Code review of
+every PR you check out:
+
+```sh
+#!/bin/sh
+exec claude --dangerously-skip-permissions "Review and fix PR #$PR_NUMBER. Steps:
+1. Use gh to read the PR description, diff, and all review comments (both PR-level and inline).
+2. Understand the intent of the PR and what each change does.
+3. Address every review comment — fix the code as requested or as appropriate.
+4. Look for any other bugs, issues, or style problems in the changed code and fix those too.
+5. Run the relevant tests to verify your fixes work.
+6. Give me a summary of what you found and what you changed.
+Do NOT push. Leave all non-merge changes unstaged for me to review."
+```
+
+The hook only runs for PR worktrees (when the argument is purely numeric); plain
+branch checkouts skip it.
+
 ## Cleaning up merged worktrees
 
 Over time, worktrees pile up for PRs that have long since been merged. Run:
