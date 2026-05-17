@@ -1,4 +1,4 @@
-import { execSync, type StdioOptions } from 'node:child_process'
+import { execFileSync, execSync, type StdioOptions } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -19,6 +19,7 @@ export function createWorktree (arg: string): string {
   }
 
   linkSharedDirs(repoRoot, worktreePath)
+  installDependencies(worktreePath)
 
   return worktreePath
 }
@@ -100,5 +101,34 @@ function linkSharedDirs (repoRoot: string, worktreePath: string): void {
     if (fs.existsSync(newDir)) continue
     // 'junction' works without elevated privileges on Windows; ignored on Unix
     fs.symlinkSync(sharedDir, newDir, 'junction')
+  }
+}
+
+function installDependencies (worktreePath: string): void {
+  const manifestPath = path.join(worktreePath, 'package.json')
+  if (!fs.existsSync(manifestPath)) return
+
+  const packageManager = readPackageManager(manifestPath)
+  if (!packageManager) return
+
+  process.stderr.write(`Installing dependencies in ${worktreePath} with ${packageManager} install\n`)
+  execFileSync(packageManager, ['install'], {
+    cwd: worktreePath,
+    stdio: ['inherit', process.stderr, process.stderr],
+  })
+}
+
+function readPackageManager (manifestPath: string): string | null {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      devEngines?: {
+        packageManager?: {
+          name?: string
+        }
+      }
+    }
+    return manifest.devEngines?.packageManager?.name ?? null
+  } catch {
+    return null
   }
 }
