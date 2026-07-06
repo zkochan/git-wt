@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 
 interface CleanupOptions {
@@ -28,6 +28,7 @@ export function cleanupWorktrees ({ dryRun }: CleanupOptions): void {
   const currentWorktree = fs.realpathSync(process.cwd())
 
   let removed = 0
+  let failed = 0
   let skipped = 0
 
   for (const entry of listWorktrees()) {
@@ -66,10 +67,11 @@ export function cleanupWorktrees ({ dryRun }: CleanupOptions): void {
 
     if (dryRun) {
       process.stderr.write('  -> Would remove worktree and delete branch\n\n')
+      removed++
     } else {
-      removeWorktree(worktreePath, branch)
+      if (removeWorktree(worktreePath, branch)) removed++
+      else failed++
     }
-    removed++
   }
 
   process.stderr.write('\n---\n')
@@ -77,7 +79,7 @@ export function cleanupWorktrees ({ dryRun }: CleanupOptions): void {
     process.stderr.write(`Would remove ${removed} worktree(s). Skipped ${skipped}.\n`)
     process.stderr.write('Run without --dry-run to actually remove them.\n')
   } else {
-    process.stderr.write(`Removed ${removed} worktree(s). Skipped ${skipped}.\n`)
+    process.stderr.write(`Removed ${removed} worktree(s). Failed ${failed}. Skipped ${skipped}.\n`)
   }
 }
 
@@ -134,19 +136,42 @@ function findMergedPr (repo: string, branch: string): MergedPr | null {
   }
 }
 
-function removeWorktree (worktreePath: string, branch: string): void {
+function removeWorktree (worktreePath: string, branch: string): boolean {
   try {
-    execSync(`git worktree remove --force "${worktreePath}"`, { stdio: ['ignore', process.stderr, process.stderr] })
+    execFileSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: ['ignore', process.stderr, process.stderr] })
     process.stderr.write('  -> Removed worktree\n')
   } catch {
-    process.stderr.write('  -> Failed to remove worktree\n')
-    return
+    if (!removeUnregisteredWorktreeLeftovers(worktreePath)) {
+      process.stderr.write('  -> Failed to remove worktree\n')
+      return false
+    }
+    process.stderr.write('  -> Removed worktree leftovers\n')
   }
   try {
-    execSync(`git branch -D "${branch}"`, { stdio: ['ignore', process.stderr, process.stderr] })
+    execFileSync('git', ['branch', '-D', branch], { stdio: ['ignore', process.stderr, process.stderr] })
     process.stderr.write(`  -> Deleted branch ${branch}\n`)
   } catch {
     // Branch delete is best-effort
   }
   process.stderr.write('\n')
+  return true
+}
+
+function removeUnregisteredWorktreeLeftovers (worktreePath: string): boolean {
+  if (!fs.existsSync(worktreePath)) return true
+  if (isRegisteredWorktree(worktreePath)) return false
+  try {
+    fs.rmSync(worktreePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isRegisteredWorktree (worktreePath: string): boolean {
+  try {
+    return listWorktrees().some((entry) => entry.path === worktreePath)
+  } catch {
+    return true
+  }
 }
