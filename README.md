@@ -118,13 +118,56 @@ git-wt cleanup --dry-run   # preview what would be removed
 git-wt cleanup             # actually remove them
 ```
 
-For each worktree, `git-wt` looks up the branch on GitHub via `gh pr list`
-and — if the branch belongs to a merged PR — removes the worktree and
-deletes the local branch. The current worktree, the bare repo, detached
-HEADs, and protected branches (`main`, `master`, `v<NN>`) are always left
-alone.
+A worktree is removed, and its local branch deleted, when either signal says the
+work has landed:
+
+- the branch belongs to a merged PR (`gh pr list --head <branch> --state merged`)
+- the branch is contained in the default branch (`git merge-base --is-ancestor`)
+
+Both are needed. The PR lookup keys on the *head branch name*, so on its own it
+misses a worktree created from someone else's PR — the local branch is
+`pr-13024` while the PR's head is the contributor's own branch — and it misses
+branches merged without a PR at all. Ancestry covers those; the PR lookup covers
+branches whose remote ref was deleted on merge.
+
+Never touched:
+
+- protected branches (`main`, `master`, `v<NN>`), the current worktree, the bare
+  repo, and detached HEADs
+- worktrees holding **uncommitted changes or unpushed commits**. A merged PR does
+  not mean the directory is idle — it is a normal place to start the follow-up.
+  Pass `--force` to remove them anyway.
 
 Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be authenticated.
+
+### Reclaiming disk from worktrees you are keeping
+
+Removing merged worktrees leaves the ones still in flight, and that is usually
+where the disk has gone: a Cargo `target/` directory dwarfs the checkout beside
+it. `--reclaim` deletes build artifacts from the worktrees that are kept, leaving
+the checkout and the branch intact:
+
+```sh
+git-wt cleanup --reclaim --dry-run
+git-wt cleanup --reclaim --idle-days 7
+```
+
+Only worktrees whose last commit is at least `--idle-days` old (default 14) are
+touched. `--keep-target` and `--keep-node-modules` narrow what is deleted.
+
+Three things it will not delete:
+
+- **Directories holding git-tracked files.** Test fixtures routinely keep tracked
+  files under `node_modules/`; deleting those dirties the worktree and breaks the
+  tests that read them.
+- **A `target/` directory cargo did not create.** Only directories carrying
+  cargo's `CACHEDIR.TAG` marker count as build output.
+- **Anything in a worktree with a running build.** A build leaves the worktree
+  clean in git terms, so `git status` cannot see it; the check reads `/proc`
+  instead (Linux only).
+
+The cost is a rebuild, which `sccache` makes cheap. On a 60-worktree checkout of
+`pnpm/pnpm` this recovered 1.7 TB.
 
 ## Shared config across worktrees
 
