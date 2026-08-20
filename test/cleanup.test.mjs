@@ -109,6 +109,44 @@ test('cleanup removes a branch contained in the default branch with no PR', () =
   }
 })
 
+test('cleanup without GitHub still removes locally merged branches', () => {
+  // The daily timer runs unattended; a GitHub outage used to abort the whole
+  // run before any local work happened, and the disk kept filling.
+  const fixture = createRepo('offline-target')
+  const toolsDir = createFakeTools({ mergedBranch: 'unused', removeMode: 'ok', ghMode: 'down' })
+  fs.rmSync(path.join(fixture.worktree, 'leftovers'), { recursive: true, force: true })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false }))
+    })
+
+    assert.match(stderr, /WARN: GitHub unavailable/)
+    assert.equal(fs.existsSync(fixture.worktree), false)
+    assert.equal(listBranch(fixture), '')
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim without GitHub still deletes build artifacts', () => {
+  const fixture = createReclaimRepo('offline-reclaim-target')
+  const toolsDir = createFakeTools({ mergedBranch: 'unused', removeMode: 'ok', ghMode: 'down' })
+
+  try {
+    withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 })
+    })
+
+    assert.equal(fs.existsSync(fixture.worktree), true)
+    assert.equal(listBranch(fixture), fixture.branch)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), false)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'node_modules')), false)
+  } finally {
+    fixture.remove()
+  }
+})
+
 test('reclaim deletes build artifacts but keeps the worktree and its branch', () => {
   const fixture = createReclaimRepo('reclaim-target')
   const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
@@ -278,9 +316,13 @@ function status (worktree) {
   return git(['status', '--porcelain'], { cwd: worktree }).stdout.trim()
 }
 
-function createFakeTools ({ mergedBranch, removeMode }) {
+function createFakeTools ({ mergedBranch, removeMode, ghMode = 'ok' }) {
   const toolsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-wt-tools-'))
   writeExecutable(path.join(toolsDir, 'gh'), `#!/bin/sh
+if [ "${ghMode}" = "down" ]; then
+  echo "error connecting to api.github.com" >&2
+  exit 1
+fi
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   echo "zkochan/git-wt"
   exit 0
