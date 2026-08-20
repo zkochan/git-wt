@@ -47,11 +47,20 @@ export function cleanupWorktrees (options: CleanupOptions): void {
     process.stderr.write('=== DRY RUN MODE ===\n\n')
   }
 
+  // GitHub going away must not stop the run: reclaim is the disk-pressure
+  // valve and needs no network, and ancestry of the default branch still
+  // detects merged work. Without GitHub the run only gets more conservative —
+  // branches merged via a PR but not yet in the local default branch are
+  // skipped, never removed.
   const ghRepo = detectGhRepo()
-  process.stderr.write(`Repository: ${ghRepo}\n\n`)
+  if (ghRepo) {
+    process.stderr.write(`Repository: ${ghRepo}\n\n`)
+  } else {
+    process.stderr.write('WARN: GitHub unavailable (gh failed); using local merge detection only.\n\n')
+  }
 
   const currentWorktree = fs.realpathSync(process.cwd())
-  const mergedByBranch = fetchMergedPrs(ghRepo)
+  const mergedByBranch = ghRepo ? fetchMergedPrs(ghRepo) : new Map<string, MergedPr>()
   const defaultBranch = detectDefaultBranch()
 
   let removed = 0
@@ -95,7 +104,7 @@ export function cleanupWorktrees (options: CleanupOptions): void {
       continue
     }
 
-    const mergedPr = mergedByBranch.get(branch) ?? findMergedPr(ghRepo, branch)
+    const mergedPr = mergedByBranch.get(branch) ?? (ghRepo ? findMergedPr(ghRepo, branch) : null)
     // A PR lookup keys on the head branch name, which misses two common cases:
     // a worktree created from someone else's PR, where the local name is not
     // the contributor's branch, and a branch merged without a PR at all. Being
@@ -147,20 +156,15 @@ export function cleanupWorktrees (options: CleanupOptions): void {
   }
 }
 
-function detectGhRepo (): string {
-  let repo = ''
+function detectGhRepo (): string | null {
   try {
-    repo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], {
+    const repo = execFileSync('gh', ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], {
       encoding: 'utf8',
     }).trim()
+    return repo || null
   } catch {
-    // fall through
+    return null
   }
-  if (!repo) {
-    process.stderr.write('Error: could not determine GitHub repository. Make sure `gh` is authenticated.\n')
-    process.exit(1)
-  }
-  return repo
 }
 
 /**
