@@ -24,6 +24,8 @@ interface WorktreeEntry {
 interface MergedPr {
   number: number
   title: string
+  /** Tip commit of the PR's head branch, the only durable link to a PR. */
+  headRefOid: string
 }
 
 interface MergedPrListItem extends MergedPr {
@@ -60,7 +62,7 @@ export function cleanupWorktrees (options: CleanupOptions): void {
   }
 
   const currentWorktree = fs.realpathSync(process.cwd())
-  const mergedByBranch = ghRepo ? fetchMergedPrs(ghRepo) : new Map<string, MergedPr>()
+  const mergedByBranch = ghRepo ? fetchMergedPrs(ghRepo) : new Map<string, MergedPr[]>()
   const defaultBranch = detectDefaultBranch()
 
   let removed = 0
@@ -104,7 +106,7 @@ export function cleanupWorktrees (options: CleanupOptions): void {
       continue
     }
 
-    const mergedPr = mergedByBranch.get(branch) ?? (ghRepo ? findMergedPr(ghRepo, branch) : null)
+    const mergedPr = findMergedPr(ghRepo, branch, resolveBranchTip(branch), mergedByBranch)
     // A PR lookup keys on the head branch name, which misses two common cases:
     // a worktree created from someone else's PR, where the local name is not
     // the contributor's branch, and a branch merged without a PR at all. Being
@@ -171,8 +173,8 @@ function detectGhRepo (): string | null {
  * Querying per branch costs a round trip each, which is minutes across a large
  * fleet. Fetch the recent window once; anything older still falls back below.
  */
-function fetchMergedPrs (repo: string): Map<string, MergedPr> {
-  const byBranch = new Map<string, MergedPr>()
+function fetchMergedPrs (repo: string): Map<string, MergedPr[]> {
+  const byBranch = new Map<string, MergedPr[]>()
   try {
     const output = execFileSync(
       'gh',
@@ -180,15 +182,18 @@ function fetchMergedPrs (repo: string): Map<string, MergedPr> {
         'pr', 'list',
         '--repo', repo,
         '--state', 'merged',
-        '--json', 'number,title,headRefName',
+        '--json', 'number,title,headRefName,headRefOid',
         '--limit', String(BULK_PR_LIMIT),
       ],
       { encoding: 'utf8' }
     ).trim()
     for (const pr of JSON.parse(output) as MergedPrListItem[]) {
-      if (pr.headRefName && !byBranch.has(pr.headRefName)) {
-        byBranch.set(pr.headRefName, { number: pr.number, title: pr.title })
-      }
+      // Branch names are recycled, so a name can carry several merged PRs.
+      if (!pr.headRefName || !pr.headRefOid) continue
+      const prs = byBranch.get(pr.headRefName)
+      const entry = { number: pr.number, title: pr.title, headRefOid: pr.headRefOid }
+      if (prs) prs.push(entry)
+      else byBranch.set(pr.headRefName, [entry])
     }
   } catch {
     // Best effort: every branch falls back to its own lookup.
@@ -268,23 +273,66 @@ function detectDefaultBranch (): string | null {
 
 function isMergedIntoDefault (branch: string, defaultBranch: string | null): boolean {
   if (!defaultBranch || branch === defaultBranch) return false
+  return isAncestor(branch, defaultBranch)
+}
+
+/** False when either commit is unknown here, which is the conservative answer. */
+function isAncestor (commit: string, descendant: string): boolean {
   try {
-    execFileSync('git', ['merge-base', '--is-ancestor', branch, defaultBranch], { stdio: 'ignore' })
+    execFileSync('git', ['merge-base', '--is-ancestor', commit, descendant], { stdio: 'ignore' })
     return true
   } catch {
     return false
   }
 }
 
-function findMergedPr (repo: string, branch: string): MergedPr | null {
+function findMergedPr (
+  repo: string | null,
+  branch: string,
+  tip: string | null,
+  bulk: Map<string, MergedPr[]>
+): MergedPr | null {
+  if (!tip) return null
+
+  const fromBulk = prCoveringTip(bulk.get(branch), tip)
+  if (fromBulk) return fromBulk
+  if (!repo) return null
+
+  // The bulk window only reaches back so far, and a branch name that lives long
+  // enough to be recycled is exactly the one whose match sits outside it.
   try {
     const output = execFileSync(
       'gh',
-      ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'merged', '--json', 'number,title'],
+      ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'merged', '--json', 'number,title,headRefOid'],
       { encoding: 'utf8' }
     ).trim()
-    const prs = JSON.parse(output) as MergedPr[]
-    return prs.length > 0 ? prs[0]! : null
+    return prCoveringTip(JSON.parse(output) as MergedPr[], tip)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A head branch name is not an identity: pnpm/pnpm merged a `side-effects` PR in
+ * 2020 and a new `side-effects` branch opened years later inherited its verdict,
+ * so the daily run deleted a worktree whose PR was still open. Only a PR whose
+ * head commit contains what is checked out here is evidence that this work
+ * landed — everything else keeps the worktree.
+ */
+function prCoveringTip (prs: MergedPr[] | undefined, tip: string): MergedPr | null {
+  if (!prs) return null
+  // Equality is the common case; ancestry covers a local branch left behind the
+  // head that was pushed and merged.
+  return prs.find((pr) => pr.headRefOid === tip || isAncestor(tip, pr.headRefOid)) ?? null
+}
+
+function resolveBranchTip (branch: string): string | null {
+  try {
+    const oid = execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return oid || null
   } catch {
     return null
   }

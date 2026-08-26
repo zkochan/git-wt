@@ -129,6 +129,36 @@ test('cleanup without GitHub still removes locally merged branches', () => {
   }
 })
 
+test('cleanup keeps a worktree whose branch name a merged PR merely reused', () => {
+  // Branch names come back around: pnpm/pnpm merged a `side-effects` PR in 2020,
+  // and a `side-effects` branch opened years later inherited that verdict, so
+  // the daily run deleted a worktree whose own PR was still open.
+  const fixture = createRepo('side-effects')
+  const toolsDir = createFakeTools({
+    mergedBranch: fixture.branch,
+    removeMode: 'ok',
+    mergedHead: 'stale',
+  })
+  fs.rmSync(path.join(fixture.worktree, 'leftovers'), { recursive: true, force: true })
+
+  // Work of its own, so the branch is not contained in main either.
+  fs.writeFileSync(path.join(fixture.worktree, 'work.txt'), 'work\n')
+  git(['add', 'work.txt'], { cwd: fixture.worktree })
+  git(['commit', '-qm', 'work'], { cwd: fixture.worktree })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, force: true }))
+    })
+
+    assert.match(stderr, /SKIP \(no merged PR\)/)
+    assert.equal(fs.existsSync(fixture.worktree), true)
+    assert.equal(listBranch(fixture), fixture.branch)
+  } finally {
+    fixture.remove()
+  }
+})
+
 test('reclaim without GitHub still deletes build artifacts', () => {
   const fixture = createReclaimRepo('offline-reclaim-target')
   const toolsDir = createFakeTools({ mergedBranch: 'unused', removeMode: 'ok', ghMode: 'down' })
@@ -316,8 +346,11 @@ function status (worktree) {
   return git(['status', '--porcelain'], { cwd: worktree }).stdout.trim()
 }
 
-function createFakeTools ({ mergedBranch, removeMode, ghMode = 'ok' }) {
+function createFakeTools ({ mergedBranch, removeMode, ghMode = 'ok', mergedHead = 'tip' }) {
   const toolsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-wt-tools-'))
+  // mergedHead 'tip': the PR merged exactly what the branch holds now.
+  // mergedHead 'stale': an older PR that merely reused the branch name, so its
+  // head commit is not in this repository at all.
   writeExecutable(path.join(toolsDir, 'gh'), `#!/bin/sh
 if [ "${ghMode}" = "down" ]; then
   echo "error connecting to api.github.com" >&2
@@ -337,7 +370,12 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     shift
   done
   if [ "$head" = "${mergedBranch}" ]; then
-    printf '[{"number":1,"title":"merged"}]\\n'
+    if [ "${mergedHead}" = "stale" ]; then
+      oid="dead0000dead0000dead0000dead0000dead0000"
+    else
+      oid="$("${realGit}" rev-parse "refs/heads/$head" 2>/dev/null)"
+    fi
+    printf '[{"number":1,"title":"merged","headRefOid":"%s"}]\\n' "$oid"
   else
     printf '[]\\n'
   fi
