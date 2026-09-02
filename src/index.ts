@@ -19,17 +19,19 @@ Removes worktrees whose branches belong to merged PRs, and deletes the branch.
   --dry-run             Report what would happen, change nothing
   --force               Remove worktrees even when they hold uncommitted or
                         unpushed work. Without this they are skipped.
-  --reclaim             For worktrees that are kept, delete build artifacts
-                        (Cargo target/ and node_modules) once idle. The branch
-                        and the checkout stay.
-  --idle-days <n>       How long a worktree must be idle to be reclaimed
-                        (default: 14)
+  --reclaim             For every worktree that is kept, whatever the reason,
+                        delete its build artifacts (Cargo target/ and
+                        node_modules) once idle. The branch and the checkout
+                        stay, uncommitted work included.
+  --idle-days <n>       Days without a commit, checkout, edit or build before
+                        a worktree counts as idle (default: 14)
   --keep-target         Do not delete Cargo target directories
   --keep-node-modules   Do not delete node_modules
   -h, --help            This message
 
-Never touched: protected branches (main, master, v*), the current worktree,
-directories holding git-tracked files, and worktrees with a running build.
+Never removed: protected branches (main, master, v*), detached HEADs and the
+current worktree. Never reclaimed: the current worktree, directories holding
+git-tracked files, and worktrees with a running build.
 `
 
 const args = process.argv.slice(2)

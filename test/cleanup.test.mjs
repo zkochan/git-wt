@@ -264,6 +264,139 @@ test('reclaim in dry-run mode changes nothing', () => {
   }
 })
 
+test('reclaim strips build output from a worktree kept for its uncommitted work', () => {
+  // Unfinished work is why most worktrees are kept, and it used to be exactly
+  // the case reclaim never reached: the skip came first. The edits stay; only
+  // the compiler output goes.
+  const fixture = createReclaimRepo('dirty-reclaim', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  const edit = path.join(fixture.worktree, 'wip.txt')
+  fs.writeFileSync(edit, 'half done\n')
+  ageFiles(fixture.worktree, 30)
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+    })
+
+    assert.match(stderr, /SKIP \(uncommitted changes\)/)
+    assert.match(stderr, /RECLAIM: .*\n  -> Removed \d+ build dir\(s\), \d+ MB, idle 30d/)
+    assert.match(stderr, /Reclaimed 1 worktree\(s\), freed \d+ MB\./)
+    assert.equal(fs.readFileSync(edit, 'utf8'), 'half done\n')
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), false)
+    assert.equal(listBranch(fixture), fixture.branch)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim strips build output from a protected branch', () => {
+  const fixture = createReclaimRepo('v9', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+    })
+
+    assert.match(stderr, /SKIP \(protected branch\)/)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), false)
+    assert.equal(fs.existsSync(fixture.worktree), true)
+    assert.equal(listBranch(fixture), fixture.branch)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim strips build output from a detached worktree', () => {
+  // Nothing will ever remove a detached checkout, so its build output would
+  // otherwise sit there for good.
+  const fixture = createReclaimRepo('detached-reclaim', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  git(['checkout', '-q', '--detach'], { cwd: fixture.worktree, env: fixture.env })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+    })
+
+    assert.match(stderr, /SKIP \(detached HEAD\): .* \[detached HEAD\]/)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), false)
+    assert.equal(fs.existsSync(fixture.worktree), true)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim never touches the current worktree', () => {
+  const fixture = createReclaimRepo('here', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.worktree, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 }))
+    })
+
+    assert.match(stderr, /SKIP \(current worktree\)/)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim counts a fresh checkout of an old branch as activity', () => {
+  // The commit date belongs to whoever wrote the commit. Checking out a
+  // month-old PR to review it moves HEAD here today, and that is what counts.
+  const fixture = createReclaimRepo('old-branch', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  git(['reset', '-q', '--hard', 'HEAD'], { cwd: fixture.worktree })
+
+  try {
+    withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+    })
+
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim counts an uncommitted edit as activity', () => {
+  const fixture = createReclaimRepo('editing', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  fs.writeFileSync(path.join(fixture.worktree, 'wip.txt'), 'today\n')
+
+  try {
+    withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+    })
+
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim counts a recent build as activity', () => {
+  // Re-running the tests in a checkout nobody edited leaves no trace in git,
+  // only in the artifacts.
+  const fixture = createReclaimRepo('rebuilt', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  const now = new Date()
+  fs.utimesSync(path.join(fixture.worktree, 'target/debug'), now, now)
+
+  try {
+    withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+    })
+
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+  } finally {
+    fixture.remove()
+  }
+})
+
 function createRepo (branch) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-wt-cleanup-'))
   const repo = path.join(root, 'repo')
@@ -290,16 +423,22 @@ function createRepo (branch) {
   }
 }
 
-function createReclaimRepo (branch) {
+function createReclaimRepo (branch, { daysOld = 0 } = {}) {
+  const when = new Date(Date.now() - daysOld * 86400 * 1000)
+  // Reflog entries take the committer date, so this ages the checkout as well.
+  const env = {
+    GIT_AUTHOR_DATE: when.toISOString(),
+    GIT_COMMITTER_DATE: when.toISOString(),
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-wt-reclaim-'))
   const repo = path.join(root, 'repo')
   const worktree = path.join(root, 'worktree')
 
   fs.mkdirSync(repo)
-  git(['init', '-q', '-b', 'main'], { cwd: repo })
-  git(['config', 'user.email', 'test@example.com'], { cwd: repo })
-  git(['config', 'user.name', 'Test'], { cwd: repo })
-  git(['config', 'commit.gpgsign', 'false'], { cwd: repo })
+  git(['init', '-q', '-b', 'main'], { cwd: repo, env })
+  git(['config', 'user.email', 'test@example.com'], { cwd: repo, env })
+  git(['config', 'user.name', 'Test'], { cwd: repo, env })
+  git(['config', 'commit.gpgsign', 'false'], { cwd: repo, env })
 
   // Build output is ignored, which is why a worktree full of it still reads as
   // clean and so reaches the reclaim path at all.
@@ -307,16 +446,16 @@ function createReclaimRepo (branch) {
   fs.writeFileSync(path.join(repo, 'README.md'), 'test\n')
   fs.mkdirSync(path.join(repo, '__fixtures__/sample/node_modules'), { recursive: true })
   fs.writeFileSync(path.join(repo, '__fixtures__/sample/node_modules/.modules.yaml'), 'tracked\n')
-  git(['add', '-f', '.gitignore', 'README.md', '__fixtures__'], { cwd: repo })
-  git(['commit', '-qm', 'init'], { cwd: repo })
-  git(['branch', branch], { cwd: repo })
-  git(['worktree', 'add', '-q', worktree, branch], { cwd: repo })
+  git(['add', '-f', '.gitignore', 'README.md', '__fixtures__'], { cwd: repo, env })
+  git(['commit', '-qm', 'init'], { cwd: repo, env })
+  git(['branch', branch], { cwd: repo, env })
+  git(['worktree', 'add', '-q', worktree, branch], { cwd: repo, env })
 
   // Put a commit on the branch so it is not contained in main — otherwise it
   // reads as merged and gets removed rather than reclaimed.
   fs.writeFileSync(path.join(worktree, 'work.txt'), 'work\n')
-  git(['add', 'work.txt'], { cwd: worktree })
-  git(['commit', '-qm', 'work'], { cwd: worktree })
+  git(['add', 'work.txt'], { cwd: worktree, env })
+  git(['commit', '-qm', 'work'], { cwd: worktree, env })
 
   // A cargo build directory, marked the way cargo marks them.
   fs.mkdirSync(path.join(worktree, 'target/debug'), { recursive: true })
@@ -334,11 +473,30 @@ function createReclaimRepo (branch) {
   fs.mkdirSync(path.join(worktree, 'node_modules/dep'), { recursive: true })
   fs.writeFileSync(path.join(worktree, 'node_modules/dep/index.js'), 'x\n')
 
+  if (daysOld > 0) ageFiles(worktree, daysOld)
+
   return {
     branch,
+    env,
     repo,
     worktree,
     remove: () => fs.rmSync(root, { recursive: true, force: true }),
+  }
+}
+
+/** Set every mtime under dir (except .git) to daysOld days ago. */
+function ageFiles (dir, daysOld) {
+  const when = new Date(Date.now() - daysOld * 86400 * 1000)
+  const stack = [dir]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === '.git') continue
+      const full = path.join(current, entry.name)
+      if (entry.isDirectory()) stack.push(full)
+      fs.lutimesSync(full, when, when)
+    }
+    fs.utimesSync(current, when, when)
   }
 }
 
@@ -438,8 +596,8 @@ function captureStderr (fn) {
   return output
 }
 
-function git (args, { cwd }) {
-  const result = spawnSync(realGit, args, { cwd, encoding: 'utf8' })
+function git (args, { cwd, env }) {
+  const result = spawnSync(realGit, args, { cwd, encoding: 'utf8', env: { ...process.env, ...env } })
   assert.equal(result.status, 0, result.stderr)
   return result
 }

@@ -8,7 +8,7 @@ export interface CleanupOptions {
   force?: boolean
   /** Also strip build artifacts from worktrees that are kept. */
   reclaim?: boolean
-  /** Only reclaim from worktrees whose last commit is at least this old. */
+  /** Only reclaim from worktrees with no commit, checkout, edit or build this recent. */
   idleDays?: number
   keepTarget?: boolean
   keepNodeModules?: boolean
@@ -69,17 +69,14 @@ export function cleanupWorktrees (options: CleanupOptions): void {
   let failed = 0
   let skipped = 0
   let reclaimed = 0
+  let reclaimedBytes = 0
 
   for (const entry of listWorktrees()) {
-    if (entry.bare || entry.detached || !entry.branch) continue
+    if (entry.bare) continue
 
-    const { path: worktreePath, branch } = entry
-
-    if (isProtectedBranch(branch)) {
-      process.stderr.write(`SKIP (protected branch): ${worktreePath} [${branch}]\n`)
-      skipped++
-      continue
-    }
+    const { path: worktreePath } = entry
+    const branch = entry.detached ? null : entry.branch
+    const label = branch ?? 'detached HEAD'
 
     let realWorktree: string
     try {
@@ -88,45 +85,52 @@ export function cleanupWorktrees (options: CleanupOptions): void {
       continue
     }
     if (realWorktree === currentWorktree) {
-      process.stderr.write(`SKIP (current worktree): ${worktreePath} [${branch}]\n`)
+      process.stderr.write(`SKIP (current worktree): ${worktreePath} [${label}]\n`)
       skipped++
       continue
     }
 
-    // A merged PR does not mean the directory is idle — it is a normal place to
-    // start the follow-up. Removing it with --force would take that work with it.
-    if (!force && hasUncommittedChanges(worktreePath)) {
-      process.stderr.write(`SKIP (uncommitted changes): ${worktreePath} [${branch}]\n`)
-      skipped++
-      continue
-    }
-    if (!force && hasUnpushedCommits(worktreePath)) {
-      process.stderr.write(`SKIP (unpushed commits): ${worktreePath} [${branch}]\n`)
-      skipped++
-      continue
+    let keepReason: string | null = null
+    let mergedPr: MergedPr | null = null
+    if (!branch) {
+      // No branch to judge merged and none to delete, but still a checkout
+      // with build output in it — and one nothing else will ever remove.
+      keepReason = 'detached HEAD'
+    } else if (isProtectedBranch(branch)) {
+      keepReason = 'protected branch'
+    } else if (!force && hasUncommittedChanges(worktreePath)) {
+      // A merged PR does not mean the directory is idle — it is a normal place to
+      // start the follow-up. Removing it with --force would take that work with it.
+      keepReason = 'uncommitted changes'
+    } else if (!force && hasUnpushedCommits(worktreePath)) {
+      keepReason = 'unpushed commits'
+    } else {
+      mergedPr = findMergedPr(ghRepo, branch, resolveBranchTip(branch), mergedByBranch)
+      // A PR lookup keys on the head branch name, which misses two common cases:
+      // a worktree created from someone else's PR, where the local name is not
+      // the contributor's branch, and a branch merged without a PR at all. Being
+      // an ancestor of the default branch settles it either way.
+      if (!mergedPr && !isMergedIntoDefault(branch, defaultBranch)) keepReason = 'no merged PR'
     }
 
-    const mergedPr = findMergedPr(ghRepo, branch, resolveBranchTip(branch), mergedByBranch)
-    // A PR lookup keys on the head branch name, which misses two common cases:
-    // a worktree created from someone else's PR, where the local name is not
-    // the contributor's branch, and a branch merged without a PR at all. Being
-    // an ancestor of the default branch settles it either way.
-    const mergedLocally = !mergedPr && isMergedIntoDefault(branch, defaultBranch)
-
-    if (!mergedPr && !mergedLocally) {
+    if (keepReason || !branch) {
+      process.stderr.write(`SKIP (${keepReason}): ${worktreePath} [${label}]\n`)
+      skipped++
+      // Whatever keeps the checkout — a protected branch, unfinished work, an
+      // open PR — is no reason to keep its build output. Unfinished work is the
+      // common case, and it used to be exactly the one reclaim never reached.
       if (reclaim) {
-        reclaimed += reclaimWorktree(worktreePath, branch, {
+        const freed = reclaimWorktree(worktreePath, label, {
           dryRun,
           idleDays,
           keepTarget,
           keepNodeModules,
         })
-          ? 1
-          : 0
-      } else {
-        process.stderr.write(`SKIP (no merged PR): ${worktreePath} [${branch}]\n`)
+        if (freed !== null) {
+          reclaimed++
+          reclaimedBytes += freed
+        }
       }
-      skipped++
       continue
     }
 
@@ -150,11 +154,11 @@ export function cleanupWorktrees (options: CleanupOptions): void {
   process.stderr.write('\n---\n')
   if (dryRun) {
     process.stderr.write(`Would remove ${removed} worktree(s). Skipped ${skipped}.\n`)
-    if (reclaim) process.stderr.write(`Would reclaim ${reclaimed} worktree(s).\n`)
+    if (reclaim) process.stderr.write(`Would reclaim ${reclaimed} worktree(s), ${formatBytes(reclaimedBytes)}.\n`)
     process.stderr.write('Run without --dry-run to actually remove them.\n')
   } else {
     process.stderr.write(`Removed ${removed} worktree(s). Failed ${failed}. Skipped ${skipped}.\n`)
-    if (reclaim) process.stderr.write(`Reclaimed ${reclaimed} worktree(s).\n`)
+    if (reclaim) process.stderr.write(`Reclaimed ${reclaimed} worktree(s), freed ${formatBytes(reclaimedBytes)}.\n`)
   }
 }
 
@@ -389,23 +393,33 @@ interface ReclaimOptions {
  * An unmerged worktree still holds its build output, and that is where the disk
  * goes: a Cargo target directory dwarfs the checkout beside it. Deleting it
  * costs a rebuild, which a compiler cache makes cheap, and keeps the branch.
+ *
+ * Returns the bytes freed, or null when nothing was touched.
  */
-function reclaimWorktree (worktree: string, branch: string, options: ReclaimOptions): boolean {
-  const age = idleDaysOf(worktree)
-  if (age < options.idleDays) return false
-
-  // A build leaves the worktree clean in git terms, so status cannot see it.
-  // Deleting target/ underneath one corrupts the build rather than restarting it.
-  if (isBusy(worktree)) {
-    process.stderr.write(`SKIP (build running): ${worktree} [${branch}]\n`)
-    return false
-  }
+function reclaimWorktree (worktree: string, branch: string, options: ReclaimOptions): number | null {
+  // The cheap signals first, so a worktree that is plainly active is never
+  // walked at all.
+  let lastActive = lastGitActivity(worktree)
+  if (daysSince(lastActive) < options.idleDays) return null
 
   const candidates = findArtifactDirs(worktree, {
     target: !options.keepTarget,
     nodeModules: !options.keepNodeModules,
   })
-  if (candidates.length === 0) return false
+  if (candidates.length === 0) return null
+
+  // A build in a checkout nobody edited — reviewing a PR, say — leaves no trace
+  // in git, only in the artifacts themselves.
+  for (const dir of candidates) lastActive = Math.max(lastActive, newestMtime(dir))
+  const age = daysSince(lastActive)
+  if (age < options.idleDays) return null
+
+  // A build leaves the worktree clean in git terms, so status cannot see it.
+  // Deleting target/ underneath one corrupts the build rather than restarting it.
+  if (isBusy(worktree)) {
+    process.stderr.write(`SKIP (build running): ${worktree} [${branch}]\n`)
+    return null
+  }
 
   const tracked = trackedPathsUnderArtifacts(worktree)
   const victims: string[] = []
@@ -415,33 +429,168 @@ function reclaimWorktree (worktree: string, branch: string, options: ReclaimOpti
     if (tracked.some((file) => file.startsWith(`${rel}/`))) kept++
     else victims.push(dir)
   }
-  if (victims.length === 0) return false
+  if (victims.length === 0) return null
 
+  const bytes = diskUsage(victims)
   const note = kept > 0 ? ` (${kept} kept: tracked files)` : ''
   if (options.dryRun) {
     process.stderr.write(`RECLAIM: ${worktree} [${branch}]\n`)
-    process.stderr.write(`  -> Would remove ${victims.length} build dir(s), idle ${age}d${note}\n\n`)
-    return true
+    process.stderr.write(`  -> Would remove ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}d${note}\n\n`)
+    return bytes
   }
 
   for (const dir of victims) {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
   process.stderr.write(`RECLAIM: ${worktree} [${branch}]\n`)
-  process.stderr.write(`  -> Removed ${victims.length} build dir(s), idle ${age}d${note}\n\n`)
-  return true
+  process.stderr.write(`  -> Removed ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}d${note}\n\n`)
+  return bytes
 }
 
-function idleDaysOf (worktree: string): number {
+function daysSince (epochSeconds: number): number {
+  return Math.floor((Date.now() / 1000 - epochSeconds) / 86400)
+}
+
+/**
+ * Seconds since the epoch of the last sign of someone working here, as far as
+ * git can tell. The commit date alone is not it: a worktree with a
+ * three-week-old commit and yesterday's edits is in daily use.
+ */
+function lastGitActivity (worktree: string): number {
+  return Math.max(lastCommitTime(worktree), lastHeadMove(worktree), newestChangedFile(worktree))
+}
+
+function lastCommitTime (worktree: string): number {
   try {
     const ts = Number(
       execFileSync('git', ['-C', worktree, 'log', '-1', '--format=%ct'], { encoding: 'utf8' }).trim()
     )
-    if (!Number.isFinite(ts)) return 0
-    return Math.floor((Date.now() / 1000 - ts) / 86400)
+    return Number.isFinite(ts) ? ts : 0
   } catch {
     return 0
   }
+}
+
+/**
+ * The commit date belongs to whoever wrote the commit. A worktree checked out
+ * yesterday from a month-old PR is not a month idle; the reflog records when
+ * HEAD last moved here — the checkout itself, a reset, a commit.
+ */
+function lastHeadMove (worktree: string): number {
+  try {
+    const output = execFileSync(
+      'git',
+      ['-C', worktree, 'reflog', 'show', '-1', '--date=unix', '--format=%gd', 'HEAD'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim()
+    const match = /\{(\d+)\}/.exec(output)
+    return match ? Number(match[1]) : 0
+  } catch {
+    return 0
+  }
+}
+
+/** Uncommitted edits are the one sign of life the history cannot see. */
+function newestChangedFile (worktree: string): number {
+  let output: string
+  try {
+    output = execFileSync('git', ['-C', worktree, 'status', '--porcelain', '-z'], { encoding: 'utf8' })
+  } catch {
+    return 0
+  }
+  let newest = 0
+  let renameSource = false
+  // Enough to see a real edit; a worktree with thousands of changes is not idle
+  // on the evidence of the first thousand either.
+  for (const entry of output.split('\0').filter(Boolean).slice(0, 1000)) {
+    let rel: string
+    if (renameSource) {
+      // A rename is followed by a second record holding the old path, bare.
+      rel = entry
+      renameSource = false
+    } else {
+      rel = entry.slice(3)
+      renameSource = /^([RC].|.[RC])/.test(entry)
+    }
+    try {
+      newest = Math.max(newest, fs.lstatSync(path.join(worktree, rel)).mtimeMs / 1000)
+    } catch {
+      // Deleted files are changes too, but there is nothing to stat.
+    }
+  }
+  return newest
+}
+
+/**
+ * Cargo never touches target/ itself on a rebuild but writes into
+ * target/<profile>/deps and .fingerprint, and pnpm rewrites node_modules/.pnpm
+ * on install — so two levels down is where a directory's last use shows.
+ */
+function newestMtime (root: string, depth = 2): number {
+  let newest = 0
+  const visit = (dir: string, level: number): void => {
+    let stat: fs.Stats
+    try {
+      stat = fs.lstatSync(dir)
+    } catch {
+      return
+    }
+    newest = Math.max(newest, stat.mtimeMs / 1000)
+    if (level === 0 || !stat.isDirectory()) return
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) visit(path.join(dir, entry.name), level - 1)
+    }
+  }
+  visit(root, depth)
+  return newest
+}
+
+/** Bytes on disk under the given directories, counting a hard-linked file once. */
+function diskUsage (dirs: string[]): number {
+  let bytes = 0
+  const seen = new Set<string>()
+  const stack = [...dirs]
+  while (stack.length > 0) {
+    const dir = stack.pop()!
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name)
+      // Symlinks are not directories to Dirent, so nothing outside is followed.
+      if (entry.isDirectory()) {
+        stack.push(full)
+        continue
+      }
+      let stat: fs.Stats
+      try {
+        stat = fs.lstatSync(full)
+      } catch {
+        continue
+      }
+      if (stat.nlink > 1) {
+        const key = `${stat.dev}:${stat.ino}`
+        if (seen.has(key)) continue
+        seen.add(key)
+      }
+      bytes += stat.blocks * 512
+    }
+  }
+  return bytes
+}
+
+function formatBytes (bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  return `${Math.round(bytes / 1e6)} MB`
 }
 
 /**
