@@ -152,8 +152,23 @@ git-wt cleanup --reclaim --dry-run
 git-wt cleanup --reclaim --idle-days 7
 ```
 
-Only worktrees whose last commit is at least `--idle-days` old (default 14) are
-touched. `--keep-target` and `--keep-node-modules` narrow what is deleted.
+This applies to every worktree the run keeps, whatever kept it: an open PR,
+uncommitted or unpushed work, a protected branch, a detached HEAD. Unfinished work is the reason
+most worktrees are kept, and it is no reason to keep their compiler output — the
+checkout, the branch and the edits all stay.
+
+Only worktrees idle for at least `--idle-days` (default 14) are touched. Idle
+means none of these for that long:
+
+- a commit on the branch
+- HEAD moving in that worktree (the checkout itself, a reset, a commit) — so a
+  worktree checked out yesterday from a month-old PR is not idle
+- an edit: the newest uncommitted file is what dates it, not the last commit
+- a build, read off the artifacts themselves (`target/<profile>/deps` and the
+  like) — so re-running the tests in a checkout you never edited keeps it
+
+`--keep-target` and `--keep-node-modules` narrow what is deleted. The log
+reports the bytes each reclaim freed.
 
 Three things it will not delete:
 
