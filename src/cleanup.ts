@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -661,22 +661,75 @@ function findArtifactDirs (root: string, want: { target: boolean, nodeModules: b
 }
 
 function isBusy (dir: string): boolean {
-  if (process.platform !== 'linux') return false
-  let pids: string[]
+  let cwds: string[]
   try {
-    pids = fs.readdirSync('/proc').filter((name) => /^\d+$/.test(name))
-  } catch {
-    return false
+    cwds = processCwds()
+  } catch (err) {
+    // Without the list there is no telling who is working where, and the
+    // caller is about to delete something. Answer "busy": an unattended run
+    // that has lost its guard must stop, not proceed unguarded.
+    warnOnce(`WARN: cannot list process working directories (${(err as Error).message}); treating every worktree as in use.`)
+    return true
   }
   const prefix = dir + path.sep
-  for (const pid of pids) {
-    let cwd: string
-    try {
-      cwd = fs.readlinkSync(`/proc/${pid}/cwd`)
-    } catch {
-      continue
-    }
-    if (cwd === dir || cwd.startsWith(prefix)) return true
+  return cwds.some((cwd) => cwd === dir || cwd.startsWith(prefix))
+}
+
+/**
+ * The working directory of every running process. Read fresh for every
+ * decision rather than once per run: a run over a hundred worktrees takes
+ * minutes, and a shell that cd's into one meanwhile must still be seen.
+ *
+ * Linux reads /proc. macOS has no /proc, so lsof lists the cwd of every
+ * process, a quarter of a second for 800 processes. Anywhere else there is
+ * no known way to tell, and the answer is that nobody is anywhere; the
+ * README says so.
+ */
+function processCwds (): string[] {
+  switch (process.platform) {
+    case 'linux': return linuxCwds()
+    case 'darwin': return darwinCwds()
+    default: return []
   }
-  return false
+}
+
+function linuxCwds (): string[] {
+  const cwds: string[] = []
+  for (const pid of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(pid)) continue
+    try {
+      cwds.push(fs.readlinkSync(`/proc/${pid}/cwd`))
+    } catch {
+      // The process exited, or belongs to another user; nothing to see.
+    }
+  }
+  return cwds
+}
+
+function darwinCwds (): string[] {
+  // -F prints one field per line, `p<pid>`, `fcwd`, `n<path>`; the path lines
+  // are the only ones that matter. -w drops the warnings about processes it
+  // may not inspect; those are missing from the output either way. The
+  // absolute path keeps a launchd job with a bare PATH working.
+  const result = spawnSync('/usr/sbin/lsof', ['-w', '-a', '-d', 'cwd', '-Fn'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  if (result.error) throw result.error
+  if (result.status !== 0 || !result.stdout) {
+    throw new Error(`lsof exited with ${result.status ?? result.signal}`)
+  }
+  const cwds: string[] = []
+  for (const line of result.stdout.split('\n')) {
+    if (line.startsWith('n')) cwds.push(line.slice(1))
+  }
+  return cwds
+}
+
+const warned = new Set<string>()
+function warnOnce (message: string): void {
+  if (warned.has(message)) return
+  warned.add(message)
+  process.stderr.write(message + '\n')
 }

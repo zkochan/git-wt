@@ -2,12 +2,16 @@
 import { cleanupWorktrees } from './cleanup.js'
 import { createWorktree } from './create.js'
 import { emitShellInit } from './init.js'
+import { createRequire } from 'node:module'
+
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string }
 
 const USAGE = `Usage:
   git-wt <branch-name>          Create a worktree for a branch and print its path
   git-wt <pr-number>            Create a worktree for a GitHub PR and print its path
   git-wt cleanup [options]      Remove worktrees whose branches belong to merged PRs
   git-wt init <bash|zsh|fish>   Print a shell function \`wt\` that cds into new worktrees
+  git-wt --version              Print the version
 
 Run \`git-wt cleanup --help\` for cleanup options.
 `
@@ -42,6 +46,11 @@ const args = process.argv.slice(2)
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   process.stdout.write(USAGE)
   process.exit(args.length === 0 ? 1 : 0)
+}
+
+if (args[0] === '--version' || args[0] === '-v') {
+  process.stdout.write(version + '\n')
+  process.exit(0)
 }
 
 if (args[0] === 'init') {
