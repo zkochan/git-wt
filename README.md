@@ -185,8 +185,10 @@ Three things it will not delete:
 - **Anything in a worktree a running process is using**, such as a build or an
   agent session whose working directory is inside. A build leaves the worktree
   clean in git terms, so `git status` cannot see it; the check reads `/proc`
-  instead (Linux only). This is what makes a threshold as short as
-  `--idle-hours 6` safe: it only reaches worktrees nobody is working in.
+  on Linux and asks `lsof` on macOS instead. Where neither exists the check
+  is absent, and every worktree looks free. This is what makes a threshold as
+  short as `--idle-hours 6` safe: it only reaches worktrees nobody is working
+  in.
 
 The cost is a rebuild, which `sccache` makes cheap. On a 60-worktree checkout of
 `pnpm/pnpm` this recovered 1.7 TB.
