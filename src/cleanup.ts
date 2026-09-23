@@ -9,7 +9,7 @@ export interface CleanupOptions {
   /** Also strip build artifacts from worktrees that are kept. */
   reclaim?: boolean
   /** Only reclaim from worktrees with no commit, checkout, edit or build this recent. */
-  idleDays?: number
+  idleHours?: number
   keepTarget?: boolean
   keepNodeModules?: boolean
 }
@@ -40,7 +40,7 @@ export function cleanupWorktrees (options: CleanupOptions): void {
     dryRun,
     force = false,
     reclaim = false,
-    idleDays = 14,
+    idleHours = 14 * 24,
     keepTarget = false,
     keepNodeModules = false,
   } = options
@@ -130,7 +130,7 @@ export function cleanupWorktrees (options: CleanupOptions): void {
       if (reclaim) {
         const freed = reclaimWorktree(worktreePath, label, {
           dryRun,
-          idleDays,
+          idleHours,
           keepTarget,
           keepNodeModules,
         })
@@ -392,7 +392,7 @@ function isRegisteredWorktree (worktreePath: string): boolean {
 
 interface ReclaimOptions {
   dryRun: boolean
-  idleDays: number
+  idleHours: number
   keepTarget: boolean
   keepNodeModules: boolean
 }
@@ -408,7 +408,7 @@ function reclaimWorktree (worktree: string, branch: string, options: ReclaimOpti
   // The cheap signals first, so a worktree that is plainly active is never
   // walked at all.
   let lastActive = lastGitActivity(worktree)
-  if (daysSince(lastActive) < options.idleDays) return null
+  if (hoursSince(lastActive) < options.idleHours) return null
 
   const candidates = findArtifactDirs(worktree, {
     target: !options.keepTarget,
@@ -419,13 +419,15 @@ function reclaimWorktree (worktree: string, branch: string, options: ReclaimOpti
   // A build in a checkout nobody edited — reviewing a PR, say — leaves no trace
   // in git, only in the artifacts themselves.
   for (const dir of candidates) lastActive = Math.max(lastActive, newestMtime(dir))
-  const age = daysSince(lastActive)
-  if (age < options.idleDays) return null
+  const idleHours = hoursSince(lastActive)
+  if (idleHours < options.idleHours) return null
+  const age = formatAge(idleHours)
 
   // A build leaves the worktree clean in git terms, so status cannot see it.
-  // Deleting target/ underneath one corrupts the build rather than restarting it.
+  // Deleting target/ underneath one corrupts the build rather than restarting
+  // it, and an agent session sitting in the worktree is about to start one.
   if (isBusy(worktree)) {
-    process.stderr.write(`SKIP (build running): ${worktree} [${branch}]\n`)
+    process.stderr.write(`SKIP (in use): ${worktree} [${branch}]\n`)
     return null
   }
 
@@ -443,7 +445,7 @@ function reclaimWorktree (worktree: string, branch: string, options: ReclaimOpti
   const note = kept > 0 ? ` (${kept} kept: tracked files)` : ''
   if (options.dryRun) {
     process.stderr.write(`RECLAIM: ${worktree} [${branch}]\n`)
-    process.stderr.write(`  -> Would remove ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}d${note}\n\n`)
+    process.stderr.write(`  -> Would remove ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}${note}\n\n`)
     return bytes
   }
 
@@ -451,12 +453,16 @@ function reclaimWorktree (worktree: string, branch: string, options: ReclaimOpti
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   }
   process.stderr.write(`RECLAIM: ${worktree} [${branch}]\n`)
-  process.stderr.write(`  -> Removed ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}d${note}\n\n`)
+  process.stderr.write(`  -> Removed ${victims.length} build dir(s), ${formatBytes(bytes)}, idle ${age}${note}\n\n`)
   return bytes
 }
 
-function daysSince (epochSeconds: number): number {
-  return Math.floor((Date.now() / 1000 - epochSeconds) / 86400)
+function hoursSince (epochSeconds: number): number {
+  return Math.floor((Date.now() / 1000 - epochSeconds) / 3600)
+}
+
+function formatAge (hours: number): string {
+  return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
 /**

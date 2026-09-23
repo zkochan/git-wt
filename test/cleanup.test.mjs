@@ -189,7 +189,7 @@ test('reclaim without GitHub still deletes build artifacts', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 })
     })
 
     assert.equal(fs.existsSync(fixture.worktree), true)
@@ -207,7 +207,7 @@ test('reclaim deletes build artifacts but keeps the worktree and its branch', ()
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 })
     })
 
     // The worktree itself survives — only its build output goes.
@@ -228,7 +228,7 @@ test('reclaim keeps directories holding git-tracked files', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 })
     })
 
     const tracked = path.join(fixture.worktree, '__fixtures__/sample/node_modules/.modules.yaml')
@@ -245,7 +245,7 @@ test('reclaim leaves a target directory that cargo did not create', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 })
     })
 
     // No CACHEDIR.TAG, so it is a directory that merely shares the name.
@@ -255,18 +255,85 @@ test('reclaim leaves a target directory that cargo did not create', () => {
   }
 })
 
-test('reclaim respects --idle-days', () => {
+test('reclaim respects the idle threshold', () => {
   const fixture = createReclaimRepo('fresh-target')
   const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 30 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 30 * 24 })
     })
 
     // The fixture's only commit is seconds old, so nothing is idle enough.
     assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
   } finally {
+    fixture.remove()
+  }
+})
+
+test('reclaim counts idle time in hours', () => {
+  const fixture = createReclaimRepo('hours-target', { daysOld: 8 / 24 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => {
+        cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 12 })
+        assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+        cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 6 })
+      })
+    })
+
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), false)
+    assert.match(stderr, /-> Removed \d+ build dir\(s\), \d+ MB, idle 8h/)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('cleanup --idle-hours sets the reclaim threshold from the command line', () => {
+  const fixture = createReclaimRepo('cli-hours-target', { daysOld: 8 / 24 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  const cli = path.resolve(import.meta.dirname, '../lib/index.js')
+
+  try {
+    const [kept, reclaimed] = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => [
+      spawnSync(process.execPath, [cli, 'cleanup', '--reclaim', '--dry-run', '--idle-hours', '12'], { encoding: 'utf8' }),
+      spawnSync(process.execPath, [cli, 'cleanup', '--reclaim', '--dry-run', '--idle-hours', '6'], { encoding: 'utf8' }),
+    ])
+
+    assert.equal(kept.status, 0, kept.stderr)
+    assert.doesNotMatch(kept.stderr, /RECLAIM:/)
+    assert.equal(reclaimed.status, 0, reclaimed.stderr)
+    assert.match(reclaimed.stderr, /-> Would remove \d+ build dir\(s\), \d+ MB, idle 8h/)
+  } finally {
+    fixture.remove()
+  }
+})
+
+test('cleanup rejects a non-integer --idle-hours', () => {
+  const cli = path.resolve(import.meta.dirname, '../lib/index.js')
+  const result = spawnSync(process.execPath, [cli, 'cleanup', '--idle-hours', '1.5'], { encoding: 'utf8' })
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /--idle-hours needs a non-negative integer/)
+})
+
+test('reclaim keeps build output that a running process is using', async () => {
+  const fixture = createReclaimRepo('busy-reclaim', { daysOld: 30 })
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  const session = spawn('sleep', ['60'], { cwd: fixture.worktree, stdio: 'ignore' })
+  await once(session, 'spawn')
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 }))
+    })
+
+    assert.match(stderr, /SKIP \(in use\)/)
+    assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
+  } finally {
+    session.kill()
     fixture.remove()
   }
 })
@@ -277,7 +344,7 @@ test('reclaim in dry-run mode changes nothing', () => {
 
   try {
     const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      return captureStderr(() => cleanupWorktrees({ dryRun: true, reclaim: true, idleDays: 0 }))
+      return captureStderr(() => cleanupWorktrees({ dryRun: true, reclaim: true, idleHours: 0 }))
     })
 
     assert.match(stderr, /Would remove \d+ build dir\(s\)/)
@@ -300,7 +367,7 @@ test('reclaim strips build output from a worktree kept for its uncommitted work'
 
   try {
     const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 }))
     })
 
     assert.match(stderr, /SKIP \(uncommitted changes\)/)
@@ -320,7 +387,7 @@ test('reclaim strips build output from a protected branch', () => {
 
   try {
     const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 }))
     })
 
     assert.match(stderr, /SKIP \(protected branch\)/)
@@ -341,7 +408,7 @@ test('reclaim strips build output from a detached worktree', () => {
 
   try {
     const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 }))
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 }))
     })
 
     assert.match(stderr, /SKIP \(detached HEAD\): .* \[detached HEAD\]/)
@@ -358,7 +425,7 @@ test('reclaim never touches the current worktree', () => {
 
   try {
     const stderr = withCleanupEnv({ cwd: fixture.worktree, toolsDir }, () => {
-      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 0 }))
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 0 }))
     })
 
     assert.match(stderr, /SKIP \(current worktree\)/)
@@ -377,7 +444,7 @@ test('reclaim counts a fresh checkout of an old branch as activity', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 })
     })
 
     assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
@@ -393,7 +460,7 @@ test('reclaim counts an uncommitted edit as activity', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 })
     })
 
     assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
@@ -412,7 +479,7 @@ test('reclaim counts a recent build as activity', () => {
 
   try {
     withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
-      cleanupWorktrees({ dryRun: false, reclaim: true, idleDays: 14 })
+      cleanupWorktrees({ dryRun: false, reclaim: true, idleHours: 14 * 24 })
     })
 
     assert.equal(fs.existsSync(path.join(fixture.worktree, 'target')), true)
