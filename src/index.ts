@@ -25,14 +25,16 @@ Removes worktrees whose branches belong to merged PRs, and deletes the branch.
                         stay, uncommitted work included.
   --idle-days <n>       Days without a commit, checkout, edit or build before
                         a worktree counts as idle (default: 14)
+  --idle-hours <n>      The same threshold in hours, for a fleet that fills
+                        the disk within days
   --keep-target         Do not delete Cargo target directories
   --keep-node-modules   Do not delete node_modules
   -h, --help            This message
 
 Never removed: protected branches (main, master, v*), detached HEADs, the
 current worktree and worktrees a running process is using. Never reclaimed:
-the current worktree, directories holding git-tracked files, and worktrees
-with a running build.
+the current worktree, directories holding git-tracked files, and worktrees a
+running process is using.
 `
 
 const args = process.argv.slice(2)
@@ -63,7 +65,7 @@ if (args[0] === 'cleanup') {
     dryRun: false,
     force: false,
     reclaim: false,
-    idleDays: 14,
+    idleHours: 14 * 24,
     keepTarget: false,
     keepNodeModules: false,
   }
@@ -78,15 +80,12 @@ if (args[0] === 'cleanup') {
       case '--reclaim': options.reclaim = true; break
       case '--keep-target': options.keepTarget = true; break
       case '--keep-node-modules': options.keepNodeModules = true; break
-      case '--idle-days': {
-        const value = Number(rest[++i])
-        if (!Number.isInteger(value) || value < 0) {
-          process.stderr.write('Error: --idle-days needs a non-negative integer\n')
-          process.exit(1)
-        }
-        options.idleDays = value
+      case '--idle-days':
+        options.idleHours = parseIdleValue(arg, rest[++i]) * 24
         break
-      }
+      case '--idle-hours':
+        options.idleHours = parseIdleValue(arg, rest[++i])
+        break
       default:
         process.stderr.write(`Error: unknown option \`${arg}\`\n\n${CLEANUP_USAGE}`)
         process.exit(1)
@@ -99,3 +98,12 @@ if (args[0] === 'cleanup') {
 
 const worktreePath = createWorktree(args[0]!)
 process.stdout.write(worktreePath + '\n')
+
+function parseIdleValue (flag: string, raw: string | undefined): number {
+  const value = Number(raw)
+  if (raw === undefined || !Number.isInteger(value) || value < 0) {
+    process.stderr.write(`Error: ${flag} needs a non-negative integer\n`)
+    process.exit(1)
+  }
+  return value
+}

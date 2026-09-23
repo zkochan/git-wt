@@ -154,6 +154,7 @@ the checkout and the branch intact:
 ```sh
 git-wt cleanup --reclaim --dry-run
 git-wt cleanup --reclaim --idle-days 7
+git-wt cleanup --reclaim --idle-hours 6
 ```
 
 This applies to every worktree the run keeps, whatever kept it: an open PR,
@@ -161,8 +162,8 @@ uncommitted or unpushed work, a protected branch, a detached HEAD. Unfinished wo
 most worktrees are kept, and it is no reason to keep their compiler output — the
 checkout, the branch and the edits all stay.
 
-Only worktrees idle for at least `--idle-days` (default 14) are touched. Idle
-means none of these for that long:
+Only worktrees idle for at least `--idle-days` (default 14), or `--idle-hours`,
+are touched. Idle means none of these for that long:
 
 - a commit on the branch
 - HEAD moving in that worktree (the checkout itself, a reset, a commit) — so a
@@ -181,9 +182,11 @@ Three things it will not delete:
   tests that read them.
 - **A `target/` directory cargo did not create.** Only directories carrying
   cargo's `CACHEDIR.TAG` marker count as build output.
-- **Anything in a worktree with a running build.** A build leaves the worktree
+- **Anything in a worktree a running process is using**, such as a build or an
+  agent session whose working directory is inside. A build leaves the worktree
   clean in git terms, so `git status` cannot see it; the check reads `/proc`
-  instead (Linux only).
+  instead (Linux only). This is what makes a threshold as short as
+  `--idle-hours 6` safe: it only reaches worktrees nobody is working in.
 
 The cost is a rebuild, which `sccache` makes cheap. On a 60-worktree checkout of
 `pnpm/pnpm` this recovered 1.7 TB.
