@@ -29,9 +29,10 @@ Removes worktrees whose branches belong to merged PRs, and deletes the branch.
   --keep-node-modules   Do not delete node_modules
   -h, --help            This message
 
-Never removed: protected branches (main, master, v*), detached HEADs and the
-current worktree. Never reclaimed: the current worktree, directories holding
-git-tracked files, and worktrees with a running build.
+Never removed: protected branches (main, master, v*), detached HEADs, the
+current worktree and worktrees a running process is using. Never reclaimed:
+the current worktree, directories holding git-tracked files, and worktrees
+with a running build.
 `
 
 const args = process.argv.slice(2)

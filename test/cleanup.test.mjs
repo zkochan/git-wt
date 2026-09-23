@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -105,6 +106,29 @@ test('cleanup removes a branch contained in the default branch with no PR', () =
     assert.equal(fs.existsSync(fixture.worktree), false)
     assert.equal(listBranch(fixture), '')
   } finally {
+    fixture.remove()
+  }
+})
+
+test('cleanup keeps a merged worktree that a running process is using', async () => {
+  // A branch just created from main has no commits of its own, so it reads as
+  // merged while the agent that created it is still working inside.
+  const fixture = createRepo('in-use-target')
+  const toolsDir = createFakeTools({ mergedBranch: 'nothing-merged', removeMode: 'ok' })
+  fs.rmSync(path.join(fixture.worktree, 'leftovers'), { recursive: true, force: true })
+  const session = spawn('sleep', ['60'], { cwd: fixture.worktree, stdio: 'ignore' })
+  await once(session, 'spawn')
+
+  try {
+    const stderr = withCleanupEnv({ cwd: fixture.repo, toolsDir }, () => {
+      return captureStderr(() => cleanupWorktrees({ dryRun: false, force: true }))
+    })
+
+    assert.match(stderr, /SKIP \(in use\)/)
+    assert.equal(fs.existsSync(fixture.worktree), true)
+    assert.equal(listBranch(fixture), fixture.branch)
+  } finally {
+    session.kill()
     fixture.remove()
   }
 })

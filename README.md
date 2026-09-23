@@ -137,6 +137,10 @@ Never touched:
 - worktrees holding **uncommitted changes or unpushed commits**. A merged PR does
   not mean the directory is idle — it is a normal place to start the follow-up.
   Pass `--force` to remove them anyway.
+- worktrees **a running process is using** (its working directory is inside).
+  A branch just created from `main` has no commits of its own, so it reads as
+  merged while the agent or shell that created it is still working there.
+  `--force` does not override this.
 
 Requires the [GitHub CLI](https://cli.github.com/) (`gh`) to be authenticated.
 

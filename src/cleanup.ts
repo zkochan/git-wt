@@ -110,7 +110,15 @@ export function cleanupWorktrees (options: CleanupOptions): void {
       // a worktree created from someone else's PR, where the local name is not
       // the contributor's branch, and a branch merged without a PR at all. Being
       // an ancestor of the default branch settles it either way.
-      if (!mergedPr && !isMergedIntoDefault(branch, defaultBranch)) keepReason = 'no merged PR'
+      if (!mergedPr && !isMergedIntoDefault(branch, defaultBranch)) {
+        keepReason = 'no merged PR'
+      } else if (isBusy(realWorktree)) {
+        // A branch just created from the default branch has no commits of its
+        // own, so it reads as merged while an agent is still exploring in it.
+        // --force does not override this: it is about work, not about a live
+        // process losing its working directory.
+        keepReason = 'in use'
+      }
     }
 
     if (keepReason || !branch) {
