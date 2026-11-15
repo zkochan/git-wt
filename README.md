@@ -81,11 +81,12 @@ shell function is for.)
 ## Running a hook after creating a PR worktree
 
 After `wt <pr-number>` creates a worktree and `cd`s into it, the shell function
-runs an executable hook if one is found. It looks in two places, in order:
+runs an executable hook if one is found. It looks in these places, in order:
 
-1. `<worktree>/.git-wt/pr-hook` — a per-repo hook that can be checked into the
-   repo so every contributor gets the same behavior.
-2. `~/.config/git-wt/pr-hook` (or `$XDG_CONFIG_HOME/git-wt/pr-hook`) — your
+1. `<worktree>/.config/git-wt/pr-hook` — a per-repo hook that can be checked
+   into the repo so every contributor gets the same behavior.
+2. `<worktree>/.git-wt/pr-hook` — the same, for repos that keep it at the root.
+3. `~/.config/git-wt/pr-hook` (or `$XDG_CONFIG_HOME/git-wt/pr-hook`) — your
    personal default for any repo without its own hook.
 
 The PR number is exposed to the hook as the `PR_NUMBER` environment variable.

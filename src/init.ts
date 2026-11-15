@@ -4,7 +4,9 @@ const BASH_ZSH = `wt() {
   [ -n "$__wt_dir" ] && [ -d "$__wt_dir" ] && cd -- "$__wt_dir" || return 1
   if [[ "$1" =~ ^[0-9]+$ ]]; then
     local __wt_hook=""
-    if [ -x "./.git-wt/pr-hook" ]; then
+    if [ -x "./.config/git-wt/pr-hook" ]; then
+      __wt_hook="./.config/git-wt/pr-hook"
+    elif [ -x "./.git-wt/pr-hook" ]; then
       __wt_hook="./.git-wt/pr-hook"
     elif [ -x "\${XDG_CONFIG_HOME:-$HOME/.config}/git-wt/pr-hook" ]; then
       __wt_hook="\${XDG_CONFIG_HOME:-$HOME/.config}/git-wt/pr-hook"
@@ -22,7 +24,9 @@ const FISH = `function wt
     if string match -qr '^\\d+$' -- $argv[1]
         set -l config_home (set -q XDG_CONFIG_HOME; and echo $XDG_CONFIG_HOME; or echo $HOME/.config)
         set -l hook ""
-        if test -x ./.git-wt/pr-hook
+        if test -x ./.config/git-wt/pr-hook
+            set hook ./.config/git-wt/pr-hook
+        else if test -x ./.git-wt/pr-hook
             set hook ./.git-wt/pr-hook
         else if test -x $config_home/git-wt/pr-hook
             set hook $config_home/git-wt/pr-hook
