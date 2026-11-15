@@ -51,6 +51,16 @@ for (const shell of SHELLS) {
       fixture.remove()
     }
   })
+
+  test(`${shell}: no hook runs for a numeric branch after --`, () => {
+    const fixture = createFixture()
+    try {
+      fixture.addHook('.config/git-wt/pr-hook', 'config-dir')
+      assert.equal(runWt(shell, fixture, '-- 42'), '')
+    } finally {
+      fixture.remove()
+    }
+  })
 }
 
 function runWt (shell, fixture, arg) {

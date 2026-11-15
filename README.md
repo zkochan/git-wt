@@ -59,6 +59,19 @@ exist yet) into a local branch named `pr-<number>`, with upstream tracking set
 so `git push` targets the right fork and branch. Requires the
 [GitHub CLI](https://cli.github.com/) (`gh`).
 
+### Branches named like a subcommand or a number
+
+A branch called `cleanup` or `init` would run that subcommand, and a branch
+called `123` would be read as a PR number. Put `--` before the name to treat it
+as a branch no matter what:
+
+```sh
+wt -- cleanup
+wt -- 123
+```
+
+No PR hook runs in this case.
+
 ### Without the shell helper
 
 If you just want the path, invoke the binary directly:
