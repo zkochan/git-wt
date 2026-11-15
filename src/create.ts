@@ -2,7 +2,7 @@ import { execFileSync, execSync, type StdioOptions } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-export function createWorktree (arg: string): string {
+export function createWorktree (arg: string, opts: { asBranch?: boolean } = {}): string {
   const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim()
 
   // Git output goes to stderr so stdout carries only the final worktree path
@@ -12,7 +12,7 @@ export function createWorktree (arg: string): string {
   let localBranch: string
   let worktreePath: string
 
-  if (/^\d+$/.test(arg)) {
+  if (!opts.asBranch && /^\d+$/.test(arg)) {
     ({ localBranch, worktreePath } = createForPullRequest(arg, repoRoot, gitStdio))
   } else {
     ({ localBranch, worktreePath } = createForBranch(arg, repoRoot, gitStdio))

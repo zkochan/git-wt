@@ -9,6 +9,8 @@ const { version } = createRequire(import.meta.url)('../package.json') as { versi
 const USAGE = `Usage:
   git-wt <branch-name>          Create a worktree for a branch and print its path
   git-wt <pr-number>            Create a worktree for a GitHub PR and print its path
+  git-wt -- <branch-name>       Treat the argument as a branch name, even if it
+                                is a subcommand (\`cleanup\`, \`init\`) or a number
   git-wt cleanup [options]      Remove worktrees whose branches belong to merged PRs
   git-wt init <bash|zsh|fish>   Print a shell function \`wt\` that cds into new worktrees
   git-wt --version              Print the version
@@ -42,6 +44,18 @@ running process is using.
 `
 
 const args = process.argv.slice(2)
+
+// `--` ends subcommand and PR-number parsing: whatever follows is a branch
+// name, so branches called `cleanup`, `init` or `123` stay reachable.
+if (args[0] === '--') {
+  const branch = args[1]
+  if (!branch || args.length > 2) {
+    process.stderr.write('Usage: git-wt -- <branch-name>\n')
+    process.exit(1)
+  }
+  process.stdout.write(createWorktree(branch, { asBranch: true }) + '\n')
+  process.exit(0)
+}
 
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   process.stdout.write(USAGE)
